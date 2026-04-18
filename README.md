@@ -14,10 +14,25 @@ gateway in front of it.
 
 ## How to actually run this
 
-The deployment UX — how a human clicks a button or pushes a branch
-and the slop lands on their fleet — is in-flight over in
-[`devopsdefender/dd`][dd]. Until that lands, slop here can be baked
-and POSTed manually:
+This repo is a **template**. Two paths:
+
+**One-click (coming via slopandmop.com):** visit [slopandmop.com](https://slopandmop.com), enter your agent's hostname, click "Deploy." The site authenticates against GitHub in your browser, forks this repo into your account, wires up `DD_AGENT_URL` + `DD_PAT`, and kicks off the deploy workflow. No YAML editing on your side.
+
+**By hand, today:**
+
+1. Click **"Use this template" → Create a new repository** on GitHub.
+2. In your new repo, **Settings → Secrets and variables → Actions:**
+    - Variable `DD_AGENT_URL` = `https://dd-production-agent-<id>.devopsdefender.com` (whatever your agent's hostname is)
+    - Secret `DD_PAT` = a GitHub PAT owned by the agent's `DD_OWNER` org/user
+3. **Actions tab → Deploy slop → Run workflow.** Pick a model (default `qwen2.5:7b`) and an ollama variant (`prod.json` for GPU agents, `preview.json` for CPU). The workflow POSTs each piece in order and prints a status summary.
+
+Push to `main` of the forked repo also redeploys — edit the slop, push, the fork takes care of the rest.
+
+Agents are owner-scoped: your PAT authorises you against any agent whose `DD_OWNER` is an org you belong to. Openclaw asks for `openclaw.<agent-hostname>` as its public hostname; dd's runtime ingress wires that up automatically once the workload posts (see [devopsdefender/dd#137][dd-137]).
+
+### Bake + POST manually (no Actions)
+
+If you just want to try the primitives:
 
 ```
 export DD_PAT="$(gh auth token)"
@@ -30,12 +45,6 @@ curl -H "Authorization: Bearer $DD_PAT" \
 #   → ollama/workload.{preview,prod}.json
 #   → MODEL=qwen2.5:7b ./bake.sh openclaw/workload.json.tmpl
 ```
-
-Agents are owner-scoped, so your GitHub PAT authorises you to deploy
-onto any agent whose `DD_OWNER` is an org you belong to. Openclaw asks
-for `openclaw.<agent-hostname>` as its public hostname; dd's runtime
-ingress pipeline wires that up automatically once the workload posts
-(see [devopsdefender/dd#137][dd-137]).
 
 ## Layout
 
