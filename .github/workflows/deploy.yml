@@ -48,6 +48,12 @@ concurrency:
 
 jobs:
   deploy:
+    # Skip on the template repo itself (and on any fork that hasn't
+    # wired up DD_AGENT_URL yet) — the workflow otherwise fails its
+    # sanity check with a red X, which looks broken but just means
+    # "this repo isn't configured to deploy anywhere." A skipped job
+    # is neutral in the GitHub UI.
+    if: ${{ vars.DD_AGENT_URL != '' }}
     runs-on: ubuntu-latest
     env:
       DD_AGENT_URL: ${{ vars.DD_AGENT_URL }}
