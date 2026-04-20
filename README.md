@@ -2,92 +2,112 @@
 
 **Compose a pile of slop, slap it on a VM, mop up when you're done.**
 
-A workload is _slop_. A running deployment is the pigs eating it. When
-you're done, you _mop_ the pen. Farming.
+Each sm is a Claude Code process running inside a sealed Intel TDX VM, with
+a markdown workspace as its state. The visitor hits [slopandmop.com][smcom],
+the factory provisions an sm, and the visitor lands in a chat with their own
+AI sysadmin that can provision more TDX VMs to run the reference slop
+(openclaw, ollama, podman, …).
 
-This repo is a **catalog** of reference slop — plain
-[easyenclave][ee] workload JSONs, no slopandmop-specific schema,
-no magic. The one here is an end-to-end LLM stack: a static podman
-tarball, a bootstrap workload that installs the wrapper, optional
-NVIDIA driver insmod, an ollama serve container, and an openclaw
-gateway in front of it.
+## Shape
 
-## How to actually run this
+Three long-lived pieces, orchestrated via [easyenclave][ee] + [dd][dd]:
 
-This repo is a **template**. Two paths:
-
-**One-click (coming via slopandmop.com):** visit [slopandmop.com](https://slopandmop.com), enter your agent's hostname, click "Deploy." The site authenticates against GitHub in your browser, forks this repo into your account, wires up `DD_AGENT_URL` + `DD_PAT`, and kicks off the deploy workflow. No YAML editing on your side.
-
-**By hand, today:**
-
-1. Click **"Use this template" → Create a new repository** on GitHub.
-2. In your new repo, **Settings → Secrets and variables → Actions:**
-    - Variable `DD_AGENT_URL` = `https://dd-production-agent-<id>.devopsdefender.com` (whatever your agent's hostname is)
-    - Secret `DD_PAT` = a GitHub PAT owned by the agent's `DD_OWNER` org/user
-3. **Actions tab → Deploy slop → Run workflow.** Pick a model (default `qwen2.5:7b`) and an ollama variant (`prod.json` for GPU agents, `preview.json` for CPU). The workflow POSTs each piece in order and prints a status summary.
-
-Push to `main` of the forked repo also redeploys — edit the slop, push, the fork takes care of the rest.
-
-Agents are owner-scoped: your PAT authorises you against any agent whose `DD_OWNER` is an org you belong to. Openclaw asks for `openclaw.<agent-hostname>` as its public hostname; dd's runtime ingress wires that up automatically once the workload posts (see [devopsdefender/dd#137][dd-137]).
-
-### Bake + POST manually (no Actions)
-
-If you just want to try the primitives:
+1. **[slopandmop.com][smcom]** — static landing, one button.
+2. **factory** (this repo, `SM_MODE=factory`) — dd-CP-shaped axum service on its
+   own TDX VM. Holds `compute.admin` for our GCP project and the Anthropic API
+   key. Provisions sm VMs, registers them, tears them down on a TTL.
+3. **sm-\<id\>** — a per-customer TDX VM from GCE image family
+   `slopandmop-stable`. Runs easyenclave as PID 1 with four boot workloads:
+   `sm-register`, `sm-chat` (ttyd wrapping `tmux new-session -A -s claude
+   claude`), `sm-agent` (cookie-gated reverse proxy → ttyd + /health), and
+   `cloudflared`.
 
 ```
-export DD_PAT="$(gh auth token)"
-curl -H "Authorization: Bearer $DD_PAT" \
-     -H "Content-Type: application/json" \
-     --data-binary "$(./bake.sh podman-static/workload.json)" \
-     https://<agent-hostname>/deploy
-# …repeat per workload in order:
-#   nv (GPU only) → podman-static → podman-bootstrap
-#   → ollama/workload.{preview,prod}.json
-#   → MODEL=qwen2.5:7b ./bake.sh openclaw/workload.json.tmpl
+Visitor → slopandmop.com → POST factory/sm/provision
+  Factory: bake ee-config, gcloud compute instances create, poll /health,
+           mint cookie, 302 → chat.sm-<id>.slopandmop.com/?session=<cookie>
+Visitor ↔ sm-agent ↔ ttyd ↔ tmux ↔ claude  (markdown workspace)
+Claude: Bash → sm-provision-workload → factory → new child TDX VM → public URL
+Watchdog: gcloud instances delete at teardown_at
 ```
+
+Full design in `../.claude/plans/i-want-to-redo-sequential-tiger.md` (or in the
+PR description for `feat/rewrite`).
 
 ## Layout
 
-| path                                | role                                                                              |
-|-------------------------------------|-----------------------------------------------------------------------------------|
-| `podman-static/workload.json`       | fetch the [mgoltzsche/podman-static][ps] tarball into `/var/lib/easyenclave/bin`. |
-| `podman-bootstrap/workload.json`    | stage binaries, install the `podman` wrapper + `containers.conf` + `policy.json`. |
-| `nv/workload.json`                  | insmod the NVIDIA driver (GPU-agent only).                                        |
-| `mount-models/workload.json`        | mount `/dev/vdc` at `/var/lib/easyenclave/ollama` for persistent model state.     |
-| `ollama/workload.preview.json`      | CPU-only `ollama serve` via the podman wrapper.                                   |
-| `ollama/workload.prod.json`         | GPU-enabled `ollama serve` with `--device=/dev/nvidia*` pass-through.             |
-| `openclaw/workload.json.tmpl`       | openclaw gateway; `${MODEL}` is baked at deploy time.                             |
-| `bake.sh`                           | render one `.json` or `.json.tmpl` → compact JSON (envsubst + jq).                |
+```
+.
+├── Cargo.toml
+├── src/                               # single crate, multiple modes
+│   ├── main.rs                        # dispatch on `smctl <mode>`
+│   ├── config.rs                      # env: SM_MODE, SM_ID, SM_COOKIE_KEY, …
+│   ├── cookie.rs                      # HS256 session cookie sign/verify
+│   ├── ita.rs                         # verify Intel ITA tokens
+│   ├── gcloud.rs                      # shell wrapper over `gcloud compute …`
+│   ├── ee_config.rs                   # bake EE_BOOT_WORKLOADS for children
+│   ├── factory.rs                     # axum: /sm/provision, /sm/register, /sm/provision-workload, /sm/teardown-workload
+│   ├── watchdog.rs                    # 60 s cron: reap VMs past teardown_at
+│   ├── agent.rs                       # sm-agent: cookie-check reverse proxy to ttyd; /health
+│   ├── register.rs                    # sm-register: one-shot POST /sm/register with ITA token
+│   └── provision_workload.rs          # sm-provision-workload: CLI sm uses to ask factory for a child VM
+├── image/
+│   ├── overlay/
+│   │   └── opt/sm-seed/
+│   │       ├── CLAUDE.md              # baked seed for workspace/CLAUDE.md
+│   │       └── commands/              # /deploy-openclaw, /status, /teardown
+│   └── targets/gcp-sm/profile.env     # fork of easyenclave's gcp target
+├── workloads/                         # reference slop
+│   ├── nv/workload.json
+│   ├── mount-models/workload.json
+│   ├── podman-static/workload.json
+│   ├── podman-bootstrap/workload.json
+│   ├── ollama/workload.{preview,prod}.json
+│   └── openclaw/workload.json.tmpl
+└── .github/workflows/
+    ├── release.yml                    # cargo build smctl → GH release
+    ├── image.yml                      # build+push slopandmop-stable GCE image
+    └── deploy-factory.yml             # deploy factory to its TDX VM
+```
 
-## Ordering
+## Modes
 
-EE spawns boot workloads concurrently; dependents self-sequence via
-`until`-loops. `podman-bootstrap` waits for `podman-static`'s tarball;
-`ollama`'s cmd waits for `/var/lib/easyenclave/bin/podman`; openclaw
-waits for ollama's `/api/tags`. Cost: a few seconds of wasted polling
-at boot. Benefit: zero dependency-graph code in the workload runner.
+`smctl` is one binary that picks a mode at startup:
 
-## Writing your own slop
+| mode                  | runs where              | does                                                                             |
+|-----------------------|-------------------------|----------------------------------------------------------------------------------|
+| `factory`             | factory TDX VM          | axum server on `:8080`, serves `/sm/*` endpoints + watchdog task.                |
+| `agent`               | every sm TDX VM         | axum server on `:8080`, cookie-checks `/chat/*` → loopback ttyd; serves `/health`. |
+| `register`            | every sm TDX VM (once)  | POSTs `/sm/register` to factory with ITA token, writes tunnel token to disk.     |
+| `provision-workload`  | inside sm, called by Claude | reads a workload JSON, POSTs `/sm/provision-workload`, polls, prints URL.       |
 
-Copy one of these dirs, rewrite `cmd` / `env`, POST the baked JSON to
-an agent's `/deploy`. The schema is defined in
-[`src/workload.rs`][workload] in easyenclave — anything EE's
-`DeployRequest` deserializer accepts is valid slop.
+## Reference slop
 
-If a workload binds an HTTP port and you want it reachable from the
-public internet, add an `expose: {hostname_label, port}` field —
-dd-agent forwards that to its control plane, which extends the
-cloudflared tunnel's ingress at runtime.
+`workloads/` holds plain easyenclave `DeployRequest` JSONs ([schema][schema]).
+Claude Code inside sm reads them, subs variables, passes them to
+`sm-provision-workload`. Writing your own slop is committing another JSON
+here.
 
-## What's next for this repo
+## Not yet built
 
-- [`easydollar`][edollar] — economic layer (compute credits, settlement). Returning as slop here.
-- [`satsforcompute`][sfc] — BTC-for-compute marketplace. Returning as slop here.
+This repo was just rewritten on `feat/rewrite`. Everything under `src/` is
+scaffolding — it compiles to stubs that print a mode banner and exit. Build
+order against the plan:
 
-[dd]: https://github.com/devopsdefender/dd
-[dd-137]: https://github.com/devopsdefender/dd/pull/137
+- [ ] `factory.rs` + `cookie.rs` + `ita.rs` + `gcloud.rs` + `ee_config.rs`
+- [ ] `agent.rs` — sm-side reverse proxy + /health
+- [ ] `register.rs` + `provision_workload.rs`
+- [ ] `image/` — forked easyenclave gcp target with sm overlay
+- [ ] `.github/workflows/{release,image,deploy-factory}.yml`
+- [ ] wire openclaw workload through the full path end-to-end
+
+## Links
+
+- [easyenclave][ee] — the TDX runtime
+- [dd][dd] — the control plane / agent we reuse
+- [slopandmop.com][smcom] — the landing page
+
 [ee]: https://github.com/easyenclave/easyenclave
-[workload]: https://github.com/easyenclave/easyenclave/blob/main/src/workload.rs
-[ps]: https://github.com/mgoltzsche/podman-static
-[edollar]: https://github.com/easyenclave/easydollar
-[sfc]: https://github.com/satsforcompute
+[dd]: https://github.com/devopsdefender/dd
+[smcom]: https://slopandmop.com
+[schema]: https://github.com/easyenclave/easyenclave/blob/main/src/workload.rs

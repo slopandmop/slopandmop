@@ -1,0 +1,29 @@
+name: Deploy factory
+
+# TODO: fork of /home/tdx2/src/dd/.github/workflows/deploy-cp.yml with:
+#   DD_MODE=cp  →  SM_MODE=factory
+#   image-family: easyenclave-stable (factory is plain ee, not sm-overlay)
+#   ee-config includes: FACTORY_URL, GCP_PROJECT, GCP_ZONE, ANTHROPIC_API_KEY,
+#     CF_API_TOKEN, CF_ZONE_ID, SM_IMAGE_FAMILY=slopandmop-stable,
+#     CHILD_IMAGE_FAMILY=easyenclave-stable, REGISTRY_PATH=/mnt/state/registry.json
+#   attach a small persistent disk at /mnt/state for the registry JSON.
+#
+# Scaffolding only.
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - 'src/**'
+      - 'Cargo.*'
+      - '.github/workflows/deploy-factory.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "TODO — see comments"

@@ -1,0 +1,27 @@
+name: Build slopandmop-stable image
+
+# TODO: fork of /home/tdx2/src/easyenclave/.github/workflows/image.yml.
+# Additions:
+#   - pull the smctl release tarball from release.yml, place at
+#     image/overlay/usr/local/bin/smctl
+#   - pull pinned claude-code bundle (node + @anthropic-ai/claude-code) into
+#     image/overlay/opt/claude-code/
+#   - pull upstream ttyd + cloudflared into image/overlay/usr/local/bin/
+#   - run the easyenclave image build with TARGET=gcp-sm
+#   - publish GCE image family `slopandmop-stable`
+#
+# Scaffolding only.
+
+on:
+  workflow_dispatch:
+  release:
+    types: [published]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "TODO — see comments"

@@ -1,0 +1,5 @@
+target/
+/image/overlay/opt/claude-code/
+/image/overlay/usr/local/bin/smctl
+/image/overlay/usr/local/bin/ttyd
+/image/overlay/usr/local/bin/cloudflared
